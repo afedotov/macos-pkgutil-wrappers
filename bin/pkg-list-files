@@ -1,0 +1,102 @@
+#!/bin/bash
+#
+
+function errcho() {
+    echo "$@" >&2
+}
+
+function error() {
+    errcho "ERROR: $*"
+}
+
+function trim() {
+    echo -n "$(echo -n "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+}
+
+function normalize_path() {
+    local IFS='/'
+    local path="$(trim "$1")/."
+    local normpath=()
+    for elem in $path; do
+        [[ -z "$elem" || "$elem" == "." ]] && continue
+        if [[ "$elem" == ".." ]]; then
+            [[ ${#normpath[@]} -gt 0 ]] && unset normpath[${#normpath[@]}-1]
+        else
+            normpath[${#normpath[@]}]="$elem"
+        fi
+    done
+    if [[ "$path" =~ ^/ ]]; then
+        echo "/${normpath[*]}"
+    else
+        echo "${normpath[*]:-.}"
+    fi
+}
+
+function get_pkg_info() {
+    unset ${!pkg_*}
+    eval $(pkgutil --pkg-info "$1" 2>/dev/null | sed -E -e 's/^(.*)\: (.*)$/\1="\2"/g' -e 's/^([^-]+)-?(.*)=/pkg_\1\2=/')
+}
+
+function print_help() {
+    errcho
+    errcho "Usage: $(basename $0) [-h] [-e] PKGID"
+    errcho
+    errcho "List files installed by the specified package checking the existence at once"
+    errcho
+    errcho "Options:"
+    errcho
+    errcho "    -h  Show help message"
+    errcho "    -e  Display only missing files (marked as ERROR in the first column)"
+    errcho
+}
+
+function setup_term() {
+    [[ -t 1 ]] || local TERM=dumb
+    T_RST="$(tput sgr0)"
+    T_BOLD="$(tput bold)"
+    T_UL="$(tput smul)"
+    T_DIM="$(tput dim)"
+}
+
+while getopts ':he' OPT; do
+    case "$OPT" in
+        h)
+            print_help
+            exit 1
+            ;;
+        e)
+            only_errors=true
+            ;;
+        *)
+            error "Invalid option - '-$OPTARG'"
+            print_help
+            exit 1
+            ;;
+    esac
+done
+
+CMDARG="${@:$OPTIND:1}" && [[ -z "$CMDARG" ]] && {
+    print_help
+    exit 1
+}
+
+get_pkg_info "$CMDARG"
+if [[ -z "$pkg_packageid" ]]; then
+    error "Package '$CMDARG' not found"
+    exit 2
+fi
+
+setup_term
+
+pkgutil --files "$pkg_packageid" | {
+    while read FILE; do
+        TARGET_FILE=$(normalize_path "$pkg_volume/$pkg_location/$FILE")
+        if [[ ! -e "$TARGET_FILE" ]]; then
+            echo "${T_BOLD}ERROR${T_RST}  ${T_DIM}----------  ----------  ----------  ------------  ------------------------${T_RST}  $TARGET_FILE"
+        elif [[ -z "$only_errors" ]]; then
+            FILE_INFO="$(stat -f '%-10.10Sp  %-10.10Su  %-10.10Sg  %12z  %24Sm  %R%T' -t '%Y-%m-%dT%H:%M:%S%z' "$TARGET_FILE")"
+            echo "OK     $FILE_INFO"
+        fi
+    done
+}
+

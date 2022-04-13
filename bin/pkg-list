@@ -1,0 +1,125 @@
+#!/bin/bash
+#
+
+function errcho() {
+    echo "$@" >&2
+}
+
+function error() {
+    errcho "ERROR: $*"
+}
+
+function trim() {
+    echo -n "$(echo -n "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+}
+
+function normalize_path() {
+    local IFS='/'
+    local path="$(trim "$1")/."
+    local normpath=()
+    for elem in $path; do
+        [[ -z "$elem" || "$elem" == "." ]] && continue
+        if [[ "$elem" == ".." ]]; then
+            [[ ${#normpath[@]} -gt 0 ]] && unset normpath[${#normpath[@]}-1]
+        else
+            normpath[${#normpath[@]}]="$elem"
+        fi
+    done
+    if [[ "$path" =~ ^/ ]]; then
+        echo "/${normpath[*]}"
+    else
+        echo "${normpath[*]:-.}"
+    fi
+}
+
+function timestamp-to-iso () {
+    echo "$(date -j -Iseconds -r ${1:-0})"
+}
+
+function get_pkg_info() {
+    unset ${!pkg_*}
+    eval $(pkgutil --pkg-info "$1" 2>/dev/null | sed -E -e 's/^(.*)\: (.*)$/\1="\2"/g' -e 's/^([^-]+)-?(.*)=/pkg_\1\2=/')
+}
+
+function print_help() {
+    errcho
+    errcho "Usage: $(basename $0) [-h] [-t|-n] [-r] [-d] [-s REGEX_1 [REGEX_2 ...]]"
+    errcho
+    errcho "List all currently installed packages"
+    errcho
+    errcho "Options:"
+    errcho
+    errcho "    -h  Show help message"
+    errcho "    -t  Sort by INSTALLED"
+    errcho "    -n  Sort by PKGID"
+    errcho "    -r  Reverse sort order"
+    errcho "    -d  Display as raw table data"
+    errcho "    -s  Show only packages with PKGID mathing REGEXes"
+    errcho
+}
+
+function format_table() {
+    [[ -t 1 ]] || local TERM=dumb
+    T_RST="$(tput sgr0)"
+    T_BOLD="$(tput bold)"
+    T_UL="$(tput smul)"
+    T_DIM="$(tput dim)"
+    if [[ -z "$raw_data" ]]; then
+        cat | column -t -s $'\t' | sed -e $'s#\x10#'$T_RST'#g' -e $'s#\x11#'$T_BOLD'#g' -e $'s#\x12#'$T_UL'#g' -e $'s#\x13#'$T_DIM'#g'
+    else
+        cat | sed -e $'s#[\x10-\x1f]##g' -e $'s#[\t]#;#g'
+    fi
+}
+
+sort_column=1
+search_regex=(".*")
+while getopts ':htnrds:' OPT; do
+    case "$OPT" in
+        h)
+            print_help
+            exit 1
+            ;;
+        t)
+            sort_column=1
+            ;;
+        n)
+            sort_column=2
+            ;;
+        r)
+            sort_args='-r'
+            ;;
+        d)
+            raw_data=true
+            ;;
+        s)
+            search_regex=("$OPTARG" "${@:$OPTIND}")
+            ;;
+        :)
+            error "Option '-$OPTARG' requires argument"
+            print_help
+            exit 1
+            ;;            
+        *)
+            error "Invalid option '-$OPTARG'"
+            print_help
+            exit 1
+            ;;
+    esac
+done
+
+for re in "${search_regex[@]}"; do
+    grep_args+=("-e" "^${re}$")
+done
+
+pkgutil --pkgs | grep -E "${grep_args[@]}" | {
+    [[ -z "$raw_data" ]] && echo -e "\x12\x13INSTALLED\x10\t\x12\x13PKGID\x10\t\x12\x13VERSION\x10\t\x12\x13LOCATION\x10"
+    declare sc_${sort_column}=$'\x11'
+    while read PKGID; do
+        get_pkg_info "$PKGID"
+        echo -ne "$sc_1$(timestamp-to-iso "$pkg_installtime")\x10\t"
+        echo -ne "$sc_2$pkg_packageid\x10\t"
+        echo -ne "$pkg_version\t"
+        echo "$(normalize_path "$pkg_volume/$pkg_location")"
+    done | sort -k ${sort_column} -t $'\t' ${sort_args}
+} | format_table
+

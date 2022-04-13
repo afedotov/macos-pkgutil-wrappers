@@ -1,0 +1,103 @@
+#!/bin/bash
+#
+
+function errcho() {
+    echo "$@" >&2
+}
+
+function error() {
+    errcho "ERROR: $*"
+}
+
+function trim() {
+    echo -n "$(echo -n "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+}
+
+function normalize_path() {
+    local IFS='/'
+    local path="$(trim "$1")/."
+    local normpath=()
+    for elem in $path; do
+        [[ -z "$elem" || "$elem" == "." ]] && continue
+        if [[ "$elem" == ".." ]]; then
+            [[ ${#normpath[@]} -gt 0 ]] && unset normpath[${#normpath[@]}-1]
+        else
+            normpath[${#normpath[@]}]="$elem"
+        fi
+    done
+    if [[ "$path" =~ ^/ ]]; then
+        echo "/${normpath[*]}"
+    else
+        echo "${normpath[*]:-.}"
+    fi
+}
+
+function abs_path() {
+    local path="$(trim "$1")"
+    [[ $path =~ ^[^/] ]] && path="$(pwd)/$path"
+    echo "$(normalize_path "$path")"
+}
+
+function setup_term() {
+    [[ -t 1 ]] || local TERM=dumb
+    T_RST="$(tput sgr0)"
+    T_BOLD="$(tput bold)"
+    T_UL="$(tput smul)"
+    T_DIM="$(tput dim)"
+}
+
+if [[ $# -ne 1 || "$1" == "-h" ]]; then
+    errcho
+    errcho "Usage: $(basename $0) FILE_PATH"
+    errcho
+    errcho "List packages owning specified file"
+    errcho
+    exit 1
+fi
+
+FILE_PATH="$(abs_path "$1")"
+
+[[ -e "${FILE_PATH}" || -L "${FILE_PATH}" ]] || {
+    error "No such file or directory: $FILE_PATH"
+    exit 2
+}
+
+PKG_TABLE=$(pkg-list -d | cut -d ';' -f 2,4)
+
+function get_pkgs_by_location() {
+    local PKG_LOCATION="$1"
+    echo "${PKG_TABLE}" | grep -E -e ";${PKG_LOCATION}$" | cut -d ';' -f 1
+}
+
+function get_pkgs_by_file_path() {
+
+    local PKG_FILE_PATH="$1"
+
+    echo "${PKG_TABLE}" | cut -d ';' -f 2 | sort -r -u | while read LOCATION; do
+
+        [[ "$LOCATION" == "/" ]] && continue
+        PKG_REL_FILE_PATH="${PKG_FILE_PATH#${LOCATION}}"
+
+        if [[ -n "$PKG_REL_FILE_PATH" ]]; then
+            PKGID=$(pkgutil --file-info "${PKG_REL_FILE_PATH}" | grep -E -e "^pkgid:" | cut -d ' ' -f 2)
+            [[ -n "$PKGID" ]] && {
+                echo "$PKGID"
+                break
+            }
+        fi
+
+    done
+
+}
+
+setup_term
+
+PKGS="$(get_pkgs_by_location "$FILE_PATH") $(get_pkgs_by_file_path "$FILE_PATH")"
+if [[ "$PKGS" =~ [^[:space:]] ]]; then
+    echo -e "Packages owning target file: ${T_BOLD}${FILE_PATH}${T_RST}"
+    pkg-list -s ${PKGS}
+else
+    errcho "There are no packages containing the target path: $FILE_PATH"
+    exit 3
+fi
+
